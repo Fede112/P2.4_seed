@@ -50,6 +50,11 @@
 #include <fstream>
 #include <iostream>
 
+
+
+#include <cmath>
+#include <deal.II/base/function_parser.h>
+
 using namespace dealii;
 
 
@@ -68,6 +73,7 @@ private:
   void assemble_system ();
   void solve ();
   void output_results () const;
+  void compute_error();
 
   Triangulation<2>     triangulation;
   FE_Q<2>              fe;
@@ -87,6 +93,11 @@ Step3::Step3 ()
   dof_handler (triangulation)
 {}
 
+
+double func(Point<2> real_q)
+{
+   return 40.*M_PI*M_PI*sin(2*M_PI*real_q[0])* sin(6*M_PI*real_q[1]);
+}
 
 
 void Step3::make_grid ()
@@ -119,13 +130,60 @@ void Step3::setup_system ()
   system_rhs.reinit (dof_handler.n_dofs());
 }
 
+void Step3::compute_error()
+{
+   // Define some constants that will be used by the function parser
+  std::map<std::string,double> constants;
+  constants["pi"] = numbers::PI;
+  // Define the variables that will be used inside the expressions
+  std::string variables = "x,y";
+  // Define the expressions of the individual components of a
+  // vector valued function with two components:
+  std::string expression = "sin(2*pi*x)*sin(6*pi*y)";
 
+  // function parser with 3 variables and 2 components
+  FunctionParser<2> fp(1);
+  // And populate it with the newly created objects.
+  fp.initialize(variables, expression, constants);
+  
+  // interpolation of exact solution
+  Vector<double> sol_inter(dof_handler.n_dofs());
+  Vector<double> cell_diff(dof_handler.n_dofs());
+  double error_quad;
+
+  VectorTools::interpolate(dof_handler, fp, sol_inter);
+
+  // norm in the quadrature points should be >= than calculating them in the vertices
+  std::cout << "Error on verteces norm (because the mesh is rectangular of order 1): " << ( sol_inter -= solution ).linfty_norm() << std::endl;
+
+  QGauss<2> q_gauss2(2);
+
+
+  VectorTools::integrate_difference( dof_handler, solution, fp, cell_diff, q_gauss2,  VectorTools::NormType::Linfty_norm );
+
+  error_quad = VectorTools::compute_global_error(triangulation, cell_diff, VectorTools::NormType::Linfty_norm);
+
+  std::cout << "Error on quadrature points norm: " << error_quad << std::endl;
+
+// void VectorTools::integrate_difference  ( const Mapping< dim, spacedim > &  mapping,
+// const DoFHandler< dim, spacedim > &   dof,
+// const InVector &  fe_function,
+// const Function< spacedim, double > &  exact_solution,
+// OutVector &   difference,
+// const Quadrature< dim > &   q,
+// const NormType &  norm,
+// const Function< spacedim, double > *  weight = 0,
+// const double  exponent = 2. 
+// )
+
+}
 
 void Step3::assemble_system ()
 {
+  // Point<2> real_q;
   QGauss<2>  quadrature_formula(2);
   FEValues<2> fe_values (fe, quadrature_formula,
-                         update_values | update_gradients | update_JxW_values);
+                         update_values | update_gradients | update_JxW_values  | update_quadrature_points);
 
   const unsigned int   dofs_per_cell = fe.dofs_per_cell;
   const unsigned int   n_q_points    = quadrature_formula.size();
@@ -139,6 +197,8 @@ void Step3::assemble_system ()
   DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
   for (; cell!=endc; ++cell)
     {
+      // fe_values is constructed once outside the loop
+      // then it is reinit for each cell
       fe_values.reinit (cell);
 
       cell_matrix = 0;
@@ -146,6 +206,7 @@ void Step3::assemble_system ()
 
       for (unsigned int q_index=0; q_index<n_q_points; ++q_index)
         {
+          const auto& real_q = fe_values.quadrature_point(q_index);
           for (unsigned int i=0; i<dofs_per_cell; ++i)
             for (unsigned int j=0; j<dofs_per_cell; ++j)
               cell_matrix(i,j) += (fe_values.shape_grad (i, q_index) *
@@ -153,8 +214,8 @@ void Step3::assemble_system ()
                                    fe_values.JxW (q_index));
 
           for (unsigned int i=0; i<dofs_per_cell; ++i)
-            cell_rhs(i) += (fe_values.shape_value (i, q_index) *
-                            1 *
+
+            cell_rhs(i) += (fe_values.shape_value (i, q_index) * func(real_q) *
                             fe_values.JxW (q_index));
         }
       cell->get_dof_indices (local_dof_indices);
@@ -201,8 +262,8 @@ void Step3::output_results () const
   data_out.add_data_vector (solution, "solution");
   data_out.build_patches ();
 
-  std::ofstream output ("solution.gpl");
-  data_out.write_gnuplot (output);
+  std::ofstream output ("solution.svg");
+  data_out.write_svg (output);
 }
 
 
@@ -214,16 +275,25 @@ void Step3::run ()
   assemble_system ();
   solve ();
   output_results ();
+  compute_error();
 }
+
+
+
+
+
+
 
 
 
 int main ()
 {
-  deallog.depth_console (2);
 
+  // Original Main
+  deallog.depth_console (2);
   Step3 laplace_problem;
   laplace_problem.run ();
+
 
   return 0;
 }

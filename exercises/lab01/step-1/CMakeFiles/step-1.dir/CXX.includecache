@@ -1,0 +1,28 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/fede/Documents/mhpc/P2.4_seed/exercises/lab01/step-1/step-1.cc
+deal.II/grid/tria.h
+-
+deal.II/grid/tria_accessor.h
+-
+deal.II/grid/tria_iterator.h
+-
+deal.II/grid/grid_generator.h
+-
+deal.II/grid/manifold_lib.h
+-
+deal.II/grid/grid_out.h
+-
+iostream
+-
+fstream
+-
+cmath
+-
+
