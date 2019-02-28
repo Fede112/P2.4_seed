@@ -77,6 +77,14 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/lac/petsc_vector.h>
 
+#include <deal.II/lac/petsc_parallel_vector.h>
+#include <deal.II/lac/petsc_parallel_sparse_matrix.h>
+
+#include <deal.II/lac/petsc_solver.h>
+#include <deal.II/lac/petsc_precondition.h>
+
+#include <deal.II/grid/grid_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
 
 
 using namespace dealii;
@@ -129,6 +137,7 @@ private:
   void assemble_system ();
   void solve ();
   void output_results () const;
+  // results () const;
   void compute_error();
 
   void assemble_on_one_cell (const typename DoFHandler<2>::active_cell_iterator &cell, ScratchData &scratch, PerTaskData &data);
@@ -136,30 +145,57 @@ private:
 
 
 
+
+  // // SparsityPattern      sparsity_pattern;
+  // // SparseMatrix<double> system_matrix;
+
+  // // Vector<double>       solution;
+  // // Vector<double>       system_rhs;
+
+  MPI_Comm mpi_communicator;
+  const unsigned int n_mpi_processes;
+  const unsigned int this_mpi_process;
+
+  ConditionalOStream pcout;
+
+  // ConstraintMatrix     hanging_node_constraints;
+  PETScWrappers::MPI::SparseMatrix system_matrix;
+  PETScWrappers::MPI::Vector       solution;
+  PETScWrappers::MPI::Vector       system_rhs;
+
   Triangulation<2>     triangulation;
-  FE_Q<2>              fe;
   DoFHandler<2>        dof_handler;
+  FE_Q<2>              fe;
 
-  SparsityPattern      sparsity_pattern;
-  SparseMatrix<double> system_matrix;
 
-  Vector<double>       solution;
-  Vector<double>       system_rhs;
 };
 
 
 
 
-// Constructor of Step3
+// // Constructor of Step3
+// Step3::Step3 ()
+//   :
+//   // decide finite elements degree
+//   fe (1),
+//    Note that the triangulation isn't set up with a mesh at all at the present time, 
+//   but the DoFHandler doesn't care: it only wants to know which triangulation it will be associated with,
+//    and it only starts to care about an actual mesh once you try to distribute degree of freedom on the mesh 
+//    using the distribute_dofs() function.) All the other member variables of the Step3 class have a default constructor which does all we want. 
+//   dof_handler (triangulation)
+// {}
+
+
 Step3::Step3 ()
   :
-  // decide finite elements degree
-  fe (1),
-  /* Note that the triangulation isn't set up with a mesh at all at the present time, 
-  but the DoFHandler doesn't care: it only wants to know which triangulation it will be associated with,
-   and it only starts to care about an actual mesh once you try to distribute degree of freedom on the mesh 
-   using the distribute_dofs() function.) All the other member variables of the Step3 class have a default constructor which does all we want. */
-  dof_handler (triangulation)
+  // for now I hard code de communicator
+  mpi_communicator (MPI_COMM_WORLD),
+  n_mpi_processes (Utilities::MPI::n_mpi_processes(mpi_communicator)),
+  this_mpi_process (Utilities::MPI::this_mpi_process(mpi_communicator)),
+  pcout (std::cout, (this_mpi_process == 0)),
+  dof_handler (triangulation),
+  // fe (FE_Q<2>(1), 2)
+  fe (1)
 {}
 
 
@@ -184,19 +220,34 @@ void Step3::make_grid ()
 
 void Step3::setup_system ()
 {
+
+  // define triangulation (all mpi processes own the same triangulation)
+  GridTools::partition_triangulation (n_mpi_processes, triangulation);
+
+  // distribute dofs between processes
   dof_handler.distribute_dofs (fe);
   std::cout << "Number of degrees of freedom: "
             << dof_handler.n_dofs()
             << std::endl;
 
+  // For hanging nodes:
+  // hanging_node_constraints.clear ();
+  // DoFTools::make_hanging_node_constraints (dof_handler,
+  //                                          hanging_node_constraints);
+  // hanging_node_constraints.close ();
+
   DynamicSparsityPattern dsp(dof_handler.n_dofs());
   DoFTools::make_sparsity_pattern (dof_handler, dsp);
-  sparsity_pattern.copy_from(dsp);
+  // sparsity_pattern.copy_from(dsp);
 
-  system_matrix.reinit (sparsity_pattern);
-
-  solution.reinit (dof_handler.n_dofs());
-  system_rhs.reinit (dof_handler.n_dofs());
+  const std::vector<IndexSet> locally_owned_dofs_per_proc = DoFTools::locally_owned_dofs_per_subdomain(dof_handler);
+  const IndexSet locally_owned_dofs = locally_owned_dofs_per_proc[this_mpi_process];
+  system_matrix.reinit (locally_owned_dofs,
+                        locally_owned_dofs,
+                        dsp,
+                        mpi_communicator);
+  solution.reinit (locally_owned_dofs, mpi_communicator);
+  system_rhs.reinit (locally_owned_dofs, mpi_communicator);
 }
 
 
@@ -229,14 +280,17 @@ PerTaskData &data)
     const auto& real_q = scratch.fe_values.quadrature_point(q_index);
     for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
       for (unsigned int j=0; j<fe.dofs_per_cell; ++j)
+      {
         data.cell_matrix(i,j) += (scratch.fe_values.shape_grad (i, q_index) *
                              scratch.fe_values.shape_grad (j, q_index) *
                              scratch.fe_values.JxW (q_index));
+      }
 
     for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
-
+    {
       data.cell_rhs(i) += (scratch.fe_values.shape_value (i, q_index) * func(real_q) *
                       scratch.fe_values.JxW (q_index));
+    }
   }
 
   cell->get_dof_indices (data.dof_indices);
@@ -283,26 +337,35 @@ void Step3::assemble_system ()
   DoFHandler<2>::active_cell_iterator cell = dof_handler.begin_active();
   DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
 
-  // for (; cell!=endc; ++cell)
-  // {
-    // std::cout<<"I enter!" << std::endl;
-    // assemble_on_one_cell(cell, scratch, data);
-    
-
+  for (; cell!=endc; ++cell)
+  {
+    if (cell->subdomain_id() == this_mpi_process)
+    {
+    assemble_on_one_cell(cell, scratch, data);
     // copy_local_to_global(data);
+    }
+  }
 
+  system_matrix.compress(VectorOperation::add);
+  system_rhs.compress(VectorOperation::add);
 
-  // }
+  // WorkStream::run ( dof_handler.begin_active(),
+  // dof_handler.end(),
+  // *this,
+  // &Step3::assemble_on_one_cell,
+  // &Step3::copy_local_to_global,
+  // scratch,
+  // data );
 
-
-  WorkStream::run ( dof_handler.begin_active(),
-  dof_handler.end(),
-  *this,
-  &Step3::assemble_on_one_cell,
-  &Step3::copy_local_to_global,
-  scratch,
-  data );
-
+  // std::map<types::global_dof_index,double> boundary_values;
+  // VectorTools::interpolate_boundary_values (dof_handler,
+  //                                           0,
+  //                                           ZeroFunction<2>(),
+  //                                           boundary_values);
+  // MatrixTools::apply_boundary_values (boundary_values,
+  //                                     system_matrix,
+  //                                     solution,
+  //                                     system_rhs);
   std::map<types::global_dof_index,double> boundary_values;
   VectorTools::interpolate_boundary_values (dof_handler,
                                             0,
@@ -311,26 +374,43 @@ void Step3::assemble_system ()
   MatrixTools::apply_boundary_values (boundary_values,
                                       system_matrix,
                                       solution,
-                                      system_rhs);
+                                      system_rhs,
+                                      false);
+
+
 }
 
 
 
 
 
-void Step3::solve ()
+void Step3::solve ()//{std::cout << "aca!" << std::endl;}
 {
-  SolverControl           solver_control (1000, 1e-12);
-  SolverCG<>              solver (solver_control);
+  // SolverControl           solver_control (1000, 1e-12);
+  // // SolverControl solver_control (solution.size(), 1e-8*system_rhs.l2_norm());
+  // // SolverCG<>              solver (solver_control);
+  
 
-  solver.solve (system_matrix, solution, system_rhs,
-                PreconditionIdentity());
+
+  // PETScWrappers::SolverCG cg (solver_control, mpi_communicator);
+  // PETScWrappers::PreconditionBlockJacobi preconditioner(system_matrix);
+  // cg.solve (system_matrix, solution, system_rhs, preconditioner);
+
+  // Vector<double> localized_solution (solution);
+  // solution = localized_solution;
+  // return solver_control.last_step();
+  // // solver.solve (system_matrix, solution, system_rhs,
+  //               // PreconditionIdentity());
 }
 
 
 
 void Step3::output_results () const
 {
+
+  if (this_mpi_process == 0)
+  {
+  
   DataOut<2> data_out;
   data_out.attach_dof_handler (dof_handler);
   data_out.add_data_vector (solution, "solution");
@@ -338,8 +418,9 @@ void Step3::output_results () const
 
   std::ofstream output ("solution.svg");
   data_out.write_svg (output);
-}
 
+  }
+}
 
 
 void Step3::run ()
@@ -349,7 +430,7 @@ void Step3::run ()
   assemble_system ();
   solve ();
   output_results ();
-  compute_error();
+  // compute_error();
 }
 
 
@@ -379,7 +460,7 @@ void Step3::compute_error()
   VectorTools::interpolate(dof_handler, fp, sol_inter);
 
   // norm in the quadrature points should be >= than calculating them in the vertices
-  std::cout << "Error on verteces norm (because the mesh is rectangular of order 1): " << ( sol_inter -= solution ).linfty_norm() << std::endl;
+  // std::cout << "Error on verteces norm (because the mesh is rectangular of order 1): " << ( sol_inter -= solution ).linfty_norm() << std::endl;
 
   QGauss<2> q_gauss2(2);
 
@@ -408,11 +489,9 @@ void Step3::compute_error()
 
 
 
-
-
-
-int main ()
+int main(int argc, char *argv[])
 {
+  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
   // Original Main
   deallog.depth_console (2);

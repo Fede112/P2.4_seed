@@ -71,4 +71,16 @@ deal.II/base/mpi.h
 -
 deal.II/lac/petsc_vector.h
 -
+deal.II/lac/petsc_parallel_vector.h
+-
+deal.II/lac/petsc_parallel_sparse_matrix.h
+-
+deal.II/lac/petsc_solver.h
+-
+deal.II/lac/petsc_precondition.h
+-
+deal.II/grid/grid_tools.h
+-
+deal.II/dofs/dof_renumbering.h
+-
 
