@@ -64,11 +64,19 @@
 #include <deal.II/grid/grid_out.h>
 
 // impose constrains to ensure continuity of the solution
-#include <deal.II/lac/affine_constraints.h>
+// #include <deal.II/lac/affine_constraints.h>
 // refine cells which are flag base on an error estimator per cell
 #include <deal.II/grid/grid_refinement.h>
 // estimate the error per cell
 #include <deal.II/numerics/error_estimator.h>
+
+
+// MPI
+
+#include <deal.II/base/conditional_ostream.h>
+#include <deal.II/base/mpi.h>
+#include <deal.II/lac/petsc_vector.h>
+
 
 
 using namespace dealii;
@@ -275,15 +283,25 @@ void Step3::assemble_system ()
   DoFHandler<2>::active_cell_iterator cell = dof_handler.begin_active();
   DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
 
-  for (; cell!=endc; ++cell)
-  {
+  // for (; cell!=endc; ++cell)
+  // {
     // std::cout<<"I enter!" << std::endl;
-    assemble_on_one_cell(cell, scratch, data);
+    // assemble_on_one_cell(cell, scratch, data);
     
 
-    copy_local_to_global(data);
-  }
+    // copy_local_to_global(data);
 
+
+  // }
+
+
+  WorkStream::run ( dof_handler.begin_active(),
+  dof_handler.end(),
+  *this,
+  &Step3::assemble_on_one_cell,
+  &Step3::copy_local_to_global,
+  scratch,
+  data );
 
   std::map<types::global_dof_index,double> boundary_values;
   VectorTools::interpolate_boundary_values (dof_handler,

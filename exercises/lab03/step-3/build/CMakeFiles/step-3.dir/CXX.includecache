@@ -59,4 +59,16 @@ deal.II/base/work_stream.h
 -
 deal.II/base/multithread_info.h
 -
+deal.II/grid/grid_out.h
+-
+deal.II/grid/grid_refinement.h
+-
+deal.II/numerics/error_estimator.h
+-
+deal.II/base/conditional_ostream.h
+-
+deal.II/base/mpi.h
+-
+deal.II/lac/petsc_vector.h
+-
 
