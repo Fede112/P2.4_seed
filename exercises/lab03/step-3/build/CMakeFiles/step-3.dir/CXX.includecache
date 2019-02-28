@@ -55,4 +55,8 @@ cmath
 -
 deal.II/base/function_parser.h
 -
+deal.II/base/work_stream.h
+-
+deal.II/base/multithread_info.h
+-
 

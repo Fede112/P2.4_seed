@@ -55,8 +55,56 @@
 #include <cmath>
 #include <deal.II/base/function_parser.h>
 
+// Thread libraries
+#include <deal.II/base/work_stream.h>
+#include <deal.II/base/multithread_info.h>
+
+
+// Output the grid
+#include <deal.II/grid/grid_out.h>
+
+// impose constrains to ensure continuity of the solution
+#include <deal.II/lac/affine_constraints.h>
+// refine cells which are flag base on an error estimator per cell
+#include <deal.II/grid/grid_refinement.h>
+// estimate the error per cell
+#include <deal.II/numerics/error_estimator.h>
+
+
 using namespace dealii;
 
+
+
+struct ScratchData {
+  std::vector<double> rhs_values;
+  FEValues<2> fe_values;
+
+  ScratchData (const FiniteElement<2> &fe, const Quadrature<2> &quadrature,
+    const UpdateFlags update_flags) 
+  : rhs_values (quadrature.size()), 
+  fe_values (fe, quadrature, update_flags)
+  {}
+  
+  
+  ScratchData (const ScratchData &rhs)
+  : rhs_values (rhs.rhs_values),
+  fe_values (rhs.fe_values.get_fe(),
+  rhs.fe_values.get_quadrature(),
+  rhs.fe_values.get_update_flags())
+  {}
+};
+
+struct PerTaskData
+{
+  FullMatrix<double> cell_matrix;
+  Vector<double> cell_rhs;
+  std::vector<unsigned int> dof_indices;
+
+  PerTaskData (const FiniteElement<2> &fe)
+  : cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell), 
+    cell_rhs(fe.dofs_per_cell), dof_indices(fe.dofs_per_cell)
+  {}
+};
 
 
 class Step3
@@ -75,6 +123,11 @@ private:
   void output_results () const;
   void compute_error();
 
+  void assemble_on_one_cell (const typename DoFHandler<2>::active_cell_iterator &cell, ScratchData &scratch, PerTaskData &data);
+  void copy_local_to_global (const PerTaskData &data);
+
+
+
   Triangulation<2>     triangulation;
   FE_Q<2>              fe;
   DoFHandler<2>        dof_handler;
@@ -87,9 +140,17 @@ private:
 };
 
 
+
+
+// Constructor of Step3
 Step3::Step3 ()
   :
+  // decide finite elements degree
   fe (1),
+  /* Note that the triangulation isn't set up with a mesh at all at the present time, 
+  but the DoFHandler doesn't care: it only wants to know which triangulation it will be associated with,
+   and it only starts to care about an actual mesh once you try to distribute degree of freedom on the mesh 
+   using the distribute_dofs() function.) All the other member variables of the Step3 class have a default constructor which does all we want. */
   dof_handler (triangulation)
 {}
 
@@ -129,6 +190,152 @@ void Step3::setup_system ()
   solution.reinit (dof_handler.n_dofs());
   system_rhs.reinit (dof_handler.n_dofs());
 }
+
+
+// void Step3<2>::assemble_system () {
+//   int n_virtual_cores = 4;
+//   Threads::ThreadGroup<void> threads;
+//   std::vector<std::pair<cell_iterator, cell_iterator> >
+//   sub_ranges = Threads::split_range (dof_handler.begin_active(), dof_handler.end(), n_virtual_cores);
+  
+//   for (t=0; t<n_virtual_cores; ++t)
+//     threads += Threads::new_thread (&Step3<2>::assemble_on_cell_range, this, sub_ranges[t].first, sub_ranges[t].second);
+//   threads.join_all ();
+
+// }
+
+
+
+void Step3::assemble_on_one_cell (
+const typename DoFHandler<2>::active_cell_iterator &cell,
+ScratchData &scratch,
+PerTaskData &data)
+{
+  scratch.fe_values.reinit (cell);
+
+  data.cell_matrix = 0;
+  data.cell_rhs = 0;
+
+  for (unsigned int q_index=0; q_index<scratch.fe_values.get_quadrature().size(); ++q_index)
+  {
+    const auto& real_q = scratch.fe_values.quadrature_point(q_index);
+    for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+      for (unsigned int j=0; j<fe.dofs_per_cell; ++j)
+        data.cell_matrix(i,j) += (scratch.fe_values.shape_grad (i, q_index) *
+                             scratch.fe_values.shape_grad (j, q_index) *
+                             scratch.fe_values.JxW (q_index));
+
+    for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+
+      data.cell_rhs(i) += (scratch.fe_values.shape_value (i, q_index) * func(real_q) *
+                      scratch.fe_values.JxW (q_index));
+  }
+
+  cell->get_dof_indices (data.dof_indices);
+}
+
+
+
+void Step3::copy_local_to_global (const PerTaskData &data)
+{
+  // for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+  for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+    for (unsigned int j=0; j<fe.dofs_per_cell; ++j)
+      // data,dof_indeices[i] are already global indeces
+      system_matrix.add (data.dof_indices[i], data.dof_indices[j],
+      data.cell_matrix(i,j));
+
+  for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+    system_rhs(data.dof_indices[i]) += data.cell_rhs(i);
+
+}
+
+void Step3::assemble_system ()
+{
+
+
+  QGauss<2>  quadrature_formula(2);
+  // FEValues<2> fe_values (fe, quadrature_formula,
+                         // update_values | update_gradients | update_JxW_values  | update_quadrature_points);
+
+  // Initialize scratch and data
+  // He creates de fe_values
+  ScratchData scratch( fe, quadrature_formula, update_values | update_gradients | update_JxW_values  | update_quadrature_points );
+  PerTaskData data( fe );
+
+  // const unsigned int   dofs_per_cell = fe.dofs_per_cell;
+  // const unsigned int   n_q_points    = quadrature_formula.size();
+
+  // FullMatrix<double>   cell_matrix (dofs_per_cell, dofs_per_cell);
+  // Vector<double>       cell_rhs (dofs_per_cell);
+
+  // from local to global indeces
+  // std::vector<types::global_dof_index> local_dof_indices (dofs_per_cell);
+
+  DoFHandler<2>::active_cell_iterator cell = dof_handler.begin_active();
+  DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
+
+  for (; cell!=endc; ++cell)
+  {
+    // std::cout<<"I enter!" << std::endl;
+    assemble_on_one_cell(cell, scratch, data);
+    
+
+    copy_local_to_global(data);
+  }
+
+
+  std::map<types::global_dof_index,double> boundary_values;
+  VectorTools::interpolate_boundary_values (dof_handler,
+                                            0,
+                                            ZeroFunction<2>(),
+                                            boundary_values);
+  MatrixTools::apply_boundary_values (boundary_values,
+                                      system_matrix,
+                                      solution,
+                                      system_rhs);
+}
+
+
+
+
+
+void Step3::solve ()
+{
+  SolverControl           solver_control (1000, 1e-12);
+  SolverCG<>              solver (solver_control);
+
+  solver.solve (system_matrix, solution, system_rhs,
+                PreconditionIdentity());
+}
+
+
+
+void Step3::output_results () const
+{
+  DataOut<2> data_out;
+  data_out.attach_dof_handler (dof_handler);
+  data_out.add_data_vector (solution, "solution");
+  data_out.build_patches ();
+
+  std::ofstream output ("solution.svg");
+  data_out.write_svg (output);
+}
+
+
+
+void Step3::run ()
+{
+  make_grid ();
+  setup_system ();
+  assemble_system ();
+  solve ();
+  output_results ();
+  compute_error();
+}
+
+
+
 
 void Step3::compute_error()
 {
@@ -176,106 +383,6 @@ void Step3::compute_error()
 // const double  exponent = 2. 
 // )
 
-}
-
-void Step3::assemble_system ()
-{
-  // Point<2> real_q;
-  QGauss<2>  quadrature_formula(2);
-  FEValues<2> fe_values (fe, quadrature_formula,
-                         update_values | update_gradients | update_JxW_values  | update_quadrature_points);
-
-  const unsigned int   dofs_per_cell = fe.dofs_per_cell;
-  const unsigned int   n_q_points    = quadrature_formula.size();
-
-  FullMatrix<double>   cell_matrix (dofs_per_cell, dofs_per_cell);
-  Vector<double>       cell_rhs (dofs_per_cell);
-
-  std::vector<types::global_dof_index> local_dof_indices (dofs_per_cell);
-
-  DoFHandler<2>::active_cell_iterator cell = dof_handler.begin_active();
-  DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
-  for (; cell!=endc; ++cell)
-    {
-      // fe_values is constructed once outside the loop
-      // then it is reinit for each cell
-      fe_values.reinit (cell);
-
-      cell_matrix = 0;
-      cell_rhs = 0;
-
-      for (unsigned int q_index=0; q_index<n_q_points; ++q_index)
-        {
-          const auto& real_q = fe_values.quadrature_point(q_index);
-          for (unsigned int i=0; i<dofs_per_cell; ++i)
-            for (unsigned int j=0; j<dofs_per_cell; ++j)
-              cell_matrix(i,j) += (fe_values.shape_grad (i, q_index) *
-                                   fe_values.shape_grad (j, q_index) *
-                                   fe_values.JxW (q_index));
-
-          for (unsigned int i=0; i<dofs_per_cell; ++i)
-
-            cell_rhs(i) += (fe_values.shape_value (i, q_index) * func(real_q) *
-                            fe_values.JxW (q_index));
-        }
-      cell->get_dof_indices (local_dof_indices);
-
-      for (unsigned int i=0; i<dofs_per_cell; ++i)
-        for (unsigned int j=0; j<dofs_per_cell; ++j)
-          system_matrix.add (local_dof_indices[i],
-                             local_dof_indices[j],
-                             cell_matrix(i,j));
-
-      for (unsigned int i=0; i<dofs_per_cell; ++i)
-        system_rhs(local_dof_indices[i]) += cell_rhs(i);
-    }
-
-
-  std::map<types::global_dof_index,double> boundary_values;
-  VectorTools::interpolate_boundary_values (dof_handler,
-                                            0,
-                                            ZeroFunction<2>(),
-                                            boundary_values);
-  MatrixTools::apply_boundary_values (boundary_values,
-                                      system_matrix,
-                                      solution,
-                                      system_rhs);
-}
-
-
-
-void Step3::solve ()
-{
-  SolverControl           solver_control (1000, 1e-12);
-  SolverCG<>              solver (solver_control);
-
-  solver.solve (system_matrix, solution, system_rhs,
-                PreconditionIdentity());
-}
-
-
-
-void Step3::output_results () const
-{
-  DataOut<2> data_out;
-  data_out.attach_dof_handler (dof_handler);
-  data_out.add_data_vector (solution, "solution");
-  data_out.build_patches ();
-
-  std::ofstream output ("solution.svg");
-  data_out.write_svg (output);
-}
-
-
-
-void Step3::run ()
-{
-  make_grid ();
-  setup_system ();
-  assemble_system ();
-  solve ();
-  output_results ();
-  compute_error();
 }
 
 
