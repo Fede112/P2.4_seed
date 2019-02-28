@@ -63,15 +63,22 @@
 // Output the grid
 #include <deal.II/grid/grid_out.h>
 
+#include <deal.II/base/function.h>
 // impose constrains to ensure continuity of the solution
-#include <deal.II/lac/affine_constraints.h>
-// refine cells which are flag base on an error estimator per cell
+#include <deal.II/lac/constraint_matrix.h>
+
+
+
+
+
+
 #include <deal.II/grid/grid_refinement.h>
 // estimate the error per cell
 #include <deal.II/numerics/error_estimator.h>
 
 
 using namespace dealii;
+
 
 
 
@@ -125,12 +132,18 @@ private:
 
   void assemble_on_one_cell (const typename DoFHandler<2>::active_cell_iterator &cell, ScratchData &scratch, PerTaskData &data);
   void copy_local_to_global (const PerTaskData &data);
+  void output_results(const unsigned int cycle) const;
+
+  void refine_grid();
+
 
 
 
   Triangulation<2>     triangulation;
   FE_Q<2>              fe;
   DoFHandler<2>        dof_handler;
+  AffineConstraints<double> constraints;
+
 
   SparsityPattern      sparsity_pattern;
   SparseMatrix<double> system_matrix;
@@ -146,7 +159,7 @@ private:
 Step3::Step3 ()
   :
   // decide finite elements degree
-  fe (1),
+  fe (2),
   /* Note that the triangulation isn't set up with a mesh at all at the present time, 
   but the DoFHandler doesn't care: it only wants to know which triangulation it will be associated with,
    and it only starts to care about an actual mesh once you try to distribute degree of freedom on the mesh 
@@ -171,6 +184,23 @@ void Step3::make_grid ()
             << std::endl;
 }
 
+void Step3::refine_grid()
+{
+  Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
+  KellyErrorEstimator<2>::estimate(
+    dof_handler,
+    QGauss<2 - 1>(3),
+    std::map<types::boundary_id, const Function<2> *>(),
+    solution,
+    estimated_error_per_cell);
+  GridRefinement::refine_and_coarsen_fixed_number(triangulation,
+                                                  estimated_error_per_cell,
+                                                  0.3,
+                                                  0.03);
+  triangulation.execute_coarsening_and_refinement();
+}
+
+
 
 
 
@@ -181,14 +211,23 @@ void Step3::setup_system ()
             << dof_handler.n_dofs()
             << std::endl;
 
-  DynamicSparsityPattern dsp(dof_handler.n_dofs());
-  DoFTools::make_sparsity_pattern (dof_handler, dsp);
-  sparsity_pattern.copy_from(dsp);
-
-  system_matrix.reinit (sparsity_pattern);
-
   solution.reinit (dof_handler.n_dofs());
   system_rhs.reinit (dof_handler.n_dofs());
+
+
+  // get constraints from hanging nodes and boundary conditions
+  constraints.clear();
+  DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+  VectorTools::interpolate_boundary_values(dof_handler, 0, Functions::ZeroFunction<2>(), constraints);
+
+  
+  constraints.close();
+
+  DynamicSparsityPattern dsp(dof_handler.n_dofs());
+  DoFTools::make_sparsity_pattern(dof_handler,dsp,constraints, /*keep_constrained_dofs = */ false);
+  sparsity_pattern.copy_from(dsp);
+  system_matrix.reinit(sparsity_pattern);
+
 }
 
 
@@ -238,15 +277,17 @@ PerTaskData &data)
 
 void Step3::copy_local_to_global (const PerTaskData &data)
 {
+  // // for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
   // for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
-  for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
-    for (unsigned int j=0; j<fe.dofs_per_cell; ++j)
-      // data,dof_indeices[i] are already global indeces
-      system_matrix.add (data.dof_indices[i], data.dof_indices[j],
-      data.cell_matrix(i,j));
+  //   for (unsigned int j=0; j<fe.dofs_per_cell; ++j)
+  //     // data,dof_indeices[i] are already global indeces
+  //     system_matrix.add (data.dof_indices[i], data.dof_indices[j],
+  //     data.cell_matrix(i,j));
 
-  for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
-    system_rhs(data.dof_indices[i]) += data.cell_rhs(i);
+  // for (unsigned int i=0; i<fe.dofs_per_cell; ++i)
+  //   system_rhs(data.dof_indices[i]) += data.cell_rhs(i);
+
+  constraints.distribute_local_to_global(data.cell_matrix, data.cell_rhs, data.dof_indices, system_matrix, system_rhs);
 
 }
 
@@ -254,7 +295,7 @@ void Step3::assemble_system ()
 {
 
 
-  QGauss<2>  quadrature_formula(2);
+  QGauss<2>  quadrature_formula(3);
   // FEValues<2> fe_values (fe, quadrature_formula,
                          // update_values | update_gradients | update_JxW_values  | update_quadrature_points);
 
@@ -300,38 +341,82 @@ void Step3::assemble_system ()
 
 
 
-void Step3::solve ()
-{
-  SolverControl           solver_control (1000, 1e-12);
-  SolverCG<>              solver (solver_control);
+// void Step3::solve ()
+// {
+//   SolverControl           solver_control (1000, 1e-12);
+//   SolverCG<>              solver (solver_control);
 
-  solver.solve (system_matrix, solution, system_rhs,
-                PreconditionIdentity());
+//   solver.solve (system_matrix, solution, system_rhs,
+//                 PreconditionIdentity());
+// }
+
+void Step3::solve()
+{
+  SolverControl solver_control(1000, 1e-12);
+  SolverCG<>    solver(solver_control);
+  PreconditionSSOR<> preconditioner;
+  preconditioner.initialize(system_matrix, 1.2);
+  solver.solve(system_matrix, solution, system_rhs, preconditioner);
+  constraints.distribute(solution);
 }
 
 
-
-void Step3::output_results () const
+// void Step3::output_results () const
+void Step3::output_results(const unsigned int cycle) const
 {
-  DataOut<2> data_out;
-  data_out.attach_dof_handler (dof_handler);
-  data_out.add_data_vector (solution, "solution");
-  data_out.build_patches ();
+  // DataOut<2> data_out;
+  // data_out.attach_dof_handler (dof_handler);
+  // data_out.add_data_vector (solution, "solution");
+  // data_out.build_patches ();
 
-  std::ofstream output ("solution.svg");
-  data_out.write_svg (output);
+  // std::ofstream output ("solution.svg");
+  // data_out.write_svg (output);
+
+  {
+    GridOut       grid_out;
+    std::ofstream output("grid-" + std::to_string(cycle) + ".eps");
+    grid_out.write_eps(triangulation, output);
+  }
+  {
+    DataOut<2> data_out;
+    data_out.attach_dof_handler(dof_handler);
+    data_out.add_data_vector(solution, "solution");
+    data_out.build_patches();
+    std::ofstream output("solution-" + std::to_string(cycle) + ".vtk");
+    data_out.write_vtk(output);
+  }
+
 }
 
 
 
 void Step3::run ()
 {
-  make_grid ();
-  setup_system ();
-  assemble_system ();
-  solve ();
-  output_results ();
-  compute_error();
+  // make_grid ();
+  // setup_system ();
+  // assemble_system ();
+  // solve ();
+  // output_results ();
+  // compute_error();
+  for (unsigned int cycle = 0; cycle < 8; ++cycle)
+  {
+    std::cout << "Cycle " << cycle << ':' << std::endl;
+    if (cycle == 0)
+      {
+        GridGenerator::hyper_ball(triangulation);
+        triangulation.refine_global(1);
+      }
+    else
+      refine_grid();
+    std::cout << "   Number of active cells:       "
+              << triangulation.n_active_cells() << std::endl;
+    setup_system();
+    std::cout << "   Number of degrees of freedom: " << dof_handler.n_dofs()
+              << std::endl;
+    assemble_system();
+    solve();
+    output_results(cycle);
+  }
 }
 
 
