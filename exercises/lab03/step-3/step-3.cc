@@ -342,7 +342,7 @@ void Step3::assemble_system ()
     if (cell->subdomain_id() == this_mpi_process)
     {
     assemble_on_one_cell(cell, scratch, data);
-    // copy_local_to_global(data);
+    copy_local_to_global(data);
     }
   }
 
@@ -387,20 +387,20 @@ void Step3::assemble_system ()
 void Step3::solve ()//{std::cout << "aca!" << std::endl;}
 {
   // SolverControl           solver_control (1000, 1e-12);
-  // // SolverControl solver_control (solution.size(), 1e-8*system_rhs.l2_norm());
-  // // SolverCG<>              solver (solver_control);
+  SolverControl solver_control (solution.size(), 1e-8*system_rhs.l2_norm());
+  // SolverCG<>              solver (solver_control);
   
 
 
-  // PETScWrappers::SolverCG cg (solver_control, mpi_communicator);
-  // PETScWrappers::PreconditionBlockJacobi preconditioner(system_matrix);
-  // cg.solve (system_matrix, solution, system_rhs, preconditioner);
+  PETScWrappers::SolverCG cg (solver_control, mpi_communicator);
+  PETScWrappers::PreconditionBlockJacobi preconditioner(system_matrix);
+  cg.solve (system_matrix, solution, system_rhs, preconditioner);
 
   // Vector<double> localized_solution (solution);
+  // hanging_node_constraints.distribute (localized_solution);
   // solution = localized_solution;
   // return solver_control.last_step();
-  // // solver.solve (system_matrix, solution, system_rhs,
-  //               // PreconditionIdentity());
+  
 }
 
 
@@ -430,7 +430,7 @@ void Step3::run ()
   assemble_system ();
   solve ();
   output_results ();
-  // compute_error();
+  compute_error();
 }
 
 
