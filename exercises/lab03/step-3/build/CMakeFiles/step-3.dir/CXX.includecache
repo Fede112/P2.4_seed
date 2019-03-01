@@ -59,4 +59,14 @@ deal.II/base/work_stream.h
 -
 deal.II/base/multithread_info.h
 -
+deal.II/grid/grid_out.h
+-
+deal.II/base/function.h
+-
+deal.II/lac/constraint_matrix.h
+-
+deal.II/grid/grid_refinement.h
+-
+deal.II/numerics/error_estimator.h
+-
 

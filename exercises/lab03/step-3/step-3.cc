@@ -118,7 +118,7 @@ class Step3
 {
 public:
   Step3 ();
-
+  ~Step3 ();
   void run ();
 
 
@@ -142,7 +142,8 @@ private:
   Triangulation<2>     triangulation;
   FE_Q<2>              fe;
   DoFHandler<2>        dof_handler;
-  AffineConstraints<double> constraints;
+  
+  ConstraintMatrix constraints;
 
 
   SparsityPattern      sparsity_pattern;
@@ -166,6 +167,11 @@ Step3::Step3 ()
    using the distribute_dofs() function.) All the other member variables of the Step3 class have a default constructor which does all we want. */
   dof_handler (triangulation)
 {}
+
+Step3::~Step3 ()
+{
+  dof_handler.clear ();
+}
 
 
 double func(Point<2> real_q)
@@ -218,7 +224,7 @@ void Step3::setup_system ()
   // get constraints from hanging nodes and boundary conditions
   constraints.clear();
   DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-  VectorTools::interpolate_boundary_values(dof_handler, 0, Functions::ZeroFunction<2>(), constraints);
+  VectorTools::interpolate_boundary_values(dof_handler, 0, ZeroFunction<2>(), constraints);
 
   
   constraints.close();
