@@ -164,8 +164,8 @@ private:
   PETScWrappers::MPI::Vector       system_rhs;
 
   Triangulation<2>     triangulation;
-  DoFHandler<2>        dof_handler;
   FE_Q<2>              fe;
+  DoFHandler<2>        dof_handler;
 
 
 };
