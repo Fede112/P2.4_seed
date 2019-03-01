@@ -409,7 +409,7 @@ void Step3::run ()
     std::cout << "Cycle " << cycle << ':' << std::endl;
     if (cycle == 0)
       {
-        GridGenerator::hyper_ball(triangulation);
+        GridGenerator::hyper_cube(triangulation);
         triangulation.refine_global(1);
       }
     else
