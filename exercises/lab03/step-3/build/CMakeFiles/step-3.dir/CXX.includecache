@@ -83,4 +83,8 @@ deal.II/grid/grid_tools.h
 -
 deal.II/dofs/dof_renumbering.h
 -
+deal.II/distributed/tria.h
+-
+deal.II/distributed/grid_refinement.h
+-
 

@@ -87,6 +87,10 @@
 #include <deal.II/dofs/dof_renumbering.h>
 
 
+#include <deal.II/distributed/tria.h>
+#include <deal.II/distributed/grid_refinement.h>
+
+
 using namespace dealii;
 
 
@@ -164,6 +168,8 @@ private:
   PETScWrappers::MPI::Vector       system_rhs;
 
   Triangulation<2>     triangulation;
+  // parallel::distributed::Triangulation<2> triangulation;
+
   FE_Q<2>              fe;
   DoFHandler<2>        dof_handler;
 
@@ -221,10 +227,26 @@ void Step3::make_grid ()
 void Step3::setup_system ()
 {
 
+  // Didn't have Deal ii installed with METIS so I distributed the mesh by hand
   // define triangulation (all mpi processes own the same triangulation)
-  GridTools::partition_triangulation (n_mpi_processes, triangulation);
+  // GridTools::partition_triangulation (n_mpi_processes, triangulation);
+  
 
-  // distribute dofs between processes
+if (n_mpi_processes == 2)
+{
+
+  DoFHandler<2>::active_cell_iterator cell = dof_handler.begin_active();
+  DoFHandler<2>::active_cell_iterator endc = dof_handler.end();
+
+  for (; cell!=endc; ++cell)
+  {
+    if (cell->center()[0] > 0)
+      cell->set_subdomain_id(0);
+    else
+      cell->set_subdomain_id(1);
+  }
+}
+  //  enumerate all the degrees of freedom and set up matrix and vector objects to hold the system data
   dof_handler.distribute_dofs (fe);
   std::cout << "Number of degrees of freedom: "
             << dof_handler.n_dofs()
